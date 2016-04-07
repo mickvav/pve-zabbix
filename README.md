@@ -1,6 +1,6 @@
- # Zabbix-proxmox integration
+# Zabbix-proxmox integration
 
- ## Background idea
+## Background idea
 
 I want to make vm related things configurable in one single place. Thus, to link
 Proxmox VE and Zabbix monitoring system, I need a script that will work with two 
@@ -13,12 +13,12 @@ Than for these machines script fidns at least one IP address and adds them into
 group. For each machine it gets list of virtual machines and creates a list of 
 parameters to be monitored (see policy hash).
 
- ## Installation
+## Installation
 
 
   cpan install Net::Proxmox::VE
 
 
- ## Execution 
+## Execution 
 
   ./pve-discover --zabbix\_user=USER --zabbix\_pass=PASS --zabbix\_host=HOST --proxmox\_user=USER --proxmox\_pass=PASS --proxmox\_host=HOST --proxmox\_realm=(pve|pam)
