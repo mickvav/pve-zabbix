@@ -191,7 +191,7 @@ for my $host (keys(%proxmox_hosts)) {
         for my $key (keys(%{$policy})) {
           $policy->{$key}->{hostid} = $zbxid;
           $policy->{$key}->{description} = $qemu->{name}.'('.$qemu->{vmid}.') '.$key;
-          $policy->{$key}->{key_} => 'vms.qemu['.$qemu->{vmid}.','.$key.']';
+          $policy->{$key}->{key_} = 'vms.qemu['.$qemu->{vmid}.','.$key.']';
           $zabbix->call('item.create', $policy->{$key} );
         };                               
      }; 
