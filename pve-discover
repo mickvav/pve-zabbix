@@ -1,0 +1,248 @@
+#!/usr/bin/perl
+#use strict;
+use Getopt::Long;
+use Pod::Usage;
+use Data::Dumper;
+use Net::Proxmox::VE;
+
+no warnings 'experimental';
+require Net::Zabbix;
+my $zabbix_host='';
+my $zabbix_user='';
+my $zabbix_pass='';
+
+my $proxmox_host='';
+my $proxmox_user='';
+my $proxmox_realm='pam';
+my $proxmox_pass='';
+
+my $pve_group_name = 'Proxmox nodes';
+#my $pve_group_name = 'Commutators';
+my $help = 0;
+my $man = 0;
+
+GetOptions ( 
+   "help|?" => \$help, 
+   "man" => \$man,
+   "zabbix_host=s" => \$zabbix_host,
+   "zabbix_user=s" => \$zabbix_user,
+   "zabbix_pass=s" => \$zabbix_pass,
+   "proxmox_host=s" => \$proxmox_host,
+   "proxmox_user=s" => \$proxmox_user,
+   "proxmox_realm=s" => \$proxmox_realm,
+   "proxmox_pass=s" => \$proxmox_pass ) or die ("Error in command line args.");
+
+pod2usage(1) if $help;
+pod2usage(-verbose => 2) if $man;
+$ENV{PERL_LWP_SSL_VERIFY_HOSTNAME}=0;
+my $zabbix = Net::Zabbix->new( $zabbix_host, $zabbix_user, $zabbix_pass);
+my $proxmox = Net::Proxmox::VE->new ( { 
+      host => $proxmox_host, 
+      username => $proxmox_user, 
+      password => $proxmox_pass, 
+      realm => $proxmox_realm,
+      ssl_opts => { verify_hostnames => 0 ,SSL_verify_mode => 0x00 }
+  } );
+
+$proxmox->login() or die ('Couldnt log in to proxmox host');
+
+my $g_zbx_ver = $zabbix->get('apiinfo.version');
+my $zbx_ver='1.8.0';
+if(defined($g_zbx_ver->{result})) {
+   $zbx_ver = $g_zbx_ver->{result};
+};
+my $g = $zabbix->get('hostgroup', { 'output' => 'extend', filter => { name =>  ( $pve_group_name ) } });
+my $groupid=undef;
+if($#{$g->{result}} == -1) {
+   print "Host group not found. Creating.\n";
+   $g = $zabbix->call('hostgroup.create', { 'name' => $pve_group_name });
+   if(defined($g->{error})) {
+      print $g->{error}->{data}."\n";
+      exit(1);
+   };
+} else {
+   $groupid = $g->{result}[0]->{groupid};
+};
+
+my $g = $zabbix->call('host.get', { groupids =>  $groupid , output => 'extend'});
+
+print "Group ID: ".$groupid."\n";
+my %zabbix_id=();
+my %zabbix_hosts=();
+my %proxmox_hosts=();
+
+for my $gh ( @{$g->{result}} ) {
+   my $ip = $gh->{ip};
+   my $host = $gh->{host};
+   if(defined($host) and defined($ip)) {
+      $zabbix_hosts{$host} = $ip;
+      $zabbix_id{$host} = $gh->{hostid};
+   };
+};
+
+my $nodes = $proxmox->get('/nodes');
+
+for $node (@{$nodes}) {
+  if (defined($node->{mem})) {
+    my $ifaces = $proxmox->get('/nodes/'.$node->{node}.'/network');
+    for my  $iface ( @{$ifaces} ) {
+       
+       if(defined($iface->{address})) {
+         $proxmox_hosts{$node->{node}} = $iface->{address}; 
+       };
+    };
+  };
+};
+
+for my $host (keys(%proxmox_hosts)) {
+  my $zbxid = undef;
+  if(defined($zabbix_hosts{$host}) and ($zabbix_hosts{$host} eq $proxmox_hosts{$host} )) {
+     print "$host Ok\n";
+     $zbxid = $zabbix_id{$host};
+  } elsif (not(defined($zabbix_hosts{$host}))) {
+     print "Adding $host to Zabbix:\n";
+     my $create_params = {     
+                              "host" => $host , 
+                              "groups" => [ { "groupid" => $groupid } ]
+                         };
+     if($zbx_ver =~/^1\.8/) { 
+           $create_params->{ip} = $proxmox_hosts{$host};
+           $create_params->{port} = "10050";
+           $create_params->{useip} = 1;
+     
+     } else {
+           $create_params->{interfaces} = [ { "type" => 1, "main" => 1, "ip" => $proxmox_hosts{$host} , "port" => "10050", "dns" => "" } ];
+     };
+     my $g = $zabbix->call('host.create', $create_params);
+     print Dumper($g);
+     $zbxid = $g->{result}->{hostids}[0];
+  } else {   ### IP Address changed.
+     print "IP Address of $host changed. Altering in Zabbix:\n";
+     my $g = $zabbix->call('host.update', { 'hostid' => $zabbix_id{$host}, 'ip' => $proxmox_hosts{$host} } );
+     print Dumper($g);
+     $zbxid = $g->{result}->{hostids}[0]; 
+  };
+
+  my $policy = {
+     'uptime' => {
+        delay => '600',
+        value_type => 3,
+        units => 's'
+     },
+     'cpu' => {
+        units => 'jiffes',
+        value_type => 0,
+        delay => '60',
+        delta => 1
+     },
+     'netin' => {
+        units => 'bps',
+        value_type => 3,
+        delta => 1,
+        delay => 60
+     },
+     'netout' => {
+        units => 'bps',
+        value_type => 3,
+        delta => 1,
+        delay => 60 
+     },
+     'mem' => {
+        units => 'b',
+        value_type => 3,
+        delay => 600
+     },
+     'cpus' => {
+        value_type => 3,
+        delay => 3600
+     },
+     'maxmem' => {
+        units => 'b',
+        value_type => 3,
+        delay => 3600
+     },
+     'maxdisk' => {
+        units => 'b',
+        value_type => 3,
+        delay => 3600
+     },
+     'diskread' => {
+        value_type => 0,
+        delay => 600
+     },
+     'diskwrite' => {
+        value_type => 0,
+        delay => 600
+     },
+  };
+  if(defined($zbxid)) {
+     my $zbx_items = $zabbix->call('item.get',{ 'output' => 'extend', 'hostids' => [ $zbxid ] } ); 
+     print 'Zabbix items present: '.Dumper($zbx_items);
+##
+##  We can add nodes.
+##
+  print "QEMU:";
+     my $qemu_vms = $proxmox->get('/nodes/'.$host.'/qemu');
+     for my $qemu (@{$qemu_vms}) { 
+        print Dumper($qemu);
+        
+        for my $key (keys(%{$policy})) {
+          $policy->{$key}->{hostid} = $zbxid;
+          $policy->{$key}->{description} = $qemu->{name}.'('.$qemu->{vmid}.') '.$key;
+          $policy->{$key}->{key_} => 'vms.qemu['.$qemu->{vmid}.','.$key.']';
+          $zabbix->call('item.create', $policy->{$key} );
+        };                               
+     }; 
+
+  print "LXC:";
+##
+##  We can add nodes.
+##
+     my $lxc_vms = $proxmox->get('/nodes/'.$host.'/lxc');
+     for my $lxc (@{$lxc_vms}) { 
+        print Dumper($lxc);
+        for my $key (keys(%{$policy})) {
+          $policy->{$key}->{hostid} = $zbxid;
+          $policy->{$key}->{description} = $qemu->{name}.' '.$key;
+          $policy->{$key}->{key_} => 'vms.lxc['.$qemu->{name}.','.$key.']';
+          $zabbix->call('item.create', $policy->{$key} );
+        };                               
+
+     }; 
+  };
+
+
+};
+__END__
+
+=head1 pve-discover
+
+    pve-discover - Discover pve nodes and add corresponding zabbix values to specific zabbix host.
+
+=head1  SYNOPSIS
+    
+    pve-discover --zabbix_host=ZABBIX_SERVER --zabbix_user=USER --zabbix_pass=PASS 
+                 --proxmox_host=PROXMOX_SERVER --proxmox_user=USER --proxmox_pass=PASS
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-help>
+
+    Print a brief help message and exits.
+
+=item B<-man>
+
+    Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+    B<This program> will connect zabbix API and proxmox API and do the following:
+    1. If Zabbix has no group 'Proxmox nodes', creates it.
+    2. Fill it with nodes from proxmox cluster, adding corresponding hosts.
+    3. Add all vms from nodes as keys.
+
+=cut 
