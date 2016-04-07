@@ -34,7 +34,9 @@ GetOptions (
 
 pod2usage(1) if $help;
 pod2usage(-verbose => 2) if $man;
+
 $ENV{PERL_LWP_SSL_VERIFY_HOSTNAME}=0;
+
 my $zabbix = Net::Zabbix->new( $zabbix_host, $zabbix_user, $zabbix_pass);
 my $proxmox = Net::Proxmox::VE->new ( { 
       host => $proxmox_host, 
