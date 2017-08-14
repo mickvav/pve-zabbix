@@ -7,17 +7,16 @@ use Net::Proxmox::VE;
 
 no warnings 'experimental';
 require Net::Zabbix;
-my $zabbix_host='';
-my $zabbix_user='';
-my $zabbix_pass='';
+my $zabbix_host='http://zabbix.example.com/zabbix';
+my $zabbix_user='admin';
+my $zabbix_pass='admin';
 
-my $proxmox_host='';
-my $proxmox_user='';
+my $proxmox_host='10.0.1.1';
+my $proxmox_user='admin';
 my $proxmox_realm='pam';
-my $proxmox_pass='';
-
+my $proxmox_pass='admin';
+my $proxmox_ipregexp=> "^10\.0\.1\.";
 my $pve_group_name = 'Proxmox nodes';
-#my $pve_group_name = 'Commutators';
 my $help = 0;
 my $man = 0;
 
@@ -30,6 +29,7 @@ GetOptions (
    "proxmox_host=s" => \$proxmox_host,
    "proxmox_user=s" => \$proxmox_user,
    "proxmox_realm=s" => \$proxmox_realm,
+   "proxmox_ipregexp=s" => \$proxmox_ipregexp,
    "proxmox_pass=s" => \$proxmox_pass ) or die ("Error in command line args.");
 
 pod2usage(1) if $help;
@@ -48,7 +48,7 @@ my $proxmox = Net::Proxmox::VE->new ( {
 
 $proxmox->login() or die ('Couldnt log in to proxmox host');
 
-my $g_zbx_ver = $zabbix->get('apiinfo.version');
+my $g_zbx_ver = $zabbix->get('apiinfo.version', { 'params' => () } );
 my $zbx_ver='1.8.0';
 if(defined($g_zbx_ver->{result})) {
    $zbx_ver = $g_zbx_ver->{result};
@@ -66,7 +66,7 @@ if($#{$g->{result}} == -1) {
    $groupid = $g->{result}[0]->{groupid};
 };
 
-my $g = $zabbix->call('host.get', { groupids =>  $groupid , output => 'extend'});
+my $g = $zabbix->call('host.get', { groupids =>  $groupid , output => 'extend', 'selectInterfaces' => 'extend'});
 
 print "Group ID: ".$groupid."\n";
 my %zabbix_id=();
@@ -74,7 +74,12 @@ my %zabbix_hosts=();
 my %proxmox_hosts=();
 
 for my $gh ( @{$g->{result}} ) {
-   my $ip = $gh->{ip};
+   my $ip=undef;
+   foreach my $interface (@{$gh->{interfaces} }) {
+     if($interface->{ip} =~ /$proxmox_ipregexp/) { 
+       $ip=$interface->{ip}
+     };
+   };
    my $host = $gh->{host};
    if(defined($host) and defined($ip)) {
       $zabbix_hosts{$host} = $ip;
@@ -89,7 +94,7 @@ for $node (@{$nodes}) {
     my $ifaces = $proxmox->get('/nodes/'.$node->{node}.'/network');
     for my  $iface ( @{$ifaces} ) {
        
-       if(defined($iface->{address})) {
+       if(defined($iface->{address}) and $iface->{address} =~ /$proxmox_ipregexp/ ) {
          $proxmox_hosts{$node->{node}} = $iface->{address}; 
        };
     };
@@ -105,16 +110,15 @@ for my $host (keys(%proxmox_hosts)) {
      print "Adding $host to Zabbix:\n";
      my $create_params = {     
                               "host" => $host , 
-                              "groups" => [ { "groupid" => $groupid } ]
+                              "groups" => [ { "groupid" => $groupid } ],
+                              "interfaces" => [ { "type" => 1, 
+                                                  "main" => 1,
+                                                  "useip" => 1,
+                                                  "ip" => $proxmox_hosts{$host},
+                                                  "dns" => "",
+                                                  "port" => "10050"
+                                                } ]
                          };
-     if($zbx_ver =~/^1\.8/) { 
-           $create_params->{ip} = $proxmox_hosts{$host};
-           $create_params->{port} = "10050";
-           $create_params->{useip} = 1;
-     
-     } else {
-           $create_params->{interfaces} = [ { "type" => 1, "main" => 1, "ip" => $proxmox_hosts{$host} , "port" => "10050", "dns" => "" } ];
-     };
      my $g = $zabbix->call('host.create', $create_params);
      print Dumper($g);
      $zbxid = $g->{result}->{hostids}[0];
