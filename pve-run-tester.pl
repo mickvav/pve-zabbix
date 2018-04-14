@@ -214,16 +214,12 @@ sub do_test {
            print "delete cdrom\n";
            $cdrom=$key;
        };
-       if($key eq 'digest') {
-           print "delete digest\n";
-           delete $h{$key};
-       };
        if(defined($h{$key})) {
           $h{$key} = urlize($h{$key});
        };
     };
     if(defined($cdrom)) {
-       $h{$cdrom} = urlize( "none,media=cdrom" );
+       $h{_cdrom} = $cdrom;
     };
     if(defined($T{MAXMEMORY}) and $h{memory} > $T{MAXMEMORY}) {
        $h{memory} = $T{MAXMEMORY};
@@ -232,7 +228,10 @@ sub do_test {
     
     $configs->{$vmid} = \%h;
   };
-  my $devs = $proxmox_tester->get('/nodes/'.$T{INTERNAL_NODE}.'/network');
+
+  my $apinode = '/nodes/'.$T{INTERNAL_NODE};
+
+  my $devs = $proxmox_tester->get($apinode.'/network');
   print Dumper($devs);
   for my $dev ( @{$devs}) {
     if(defined($bridges->{$dev->{iface}})) {
@@ -243,7 +242,7 @@ sub do_test {
   for my $br (keys(%{$bridges})) { # create remaining bridges
     print "Adding bridge $br\n";
     $count++;
-    my $br_result = $proxmox_tester->post('/nodes/'.$T{INTERNAL_NODE}.'/network',
+    my $br_result = $proxmox_tester->post($apinode.'/network',
                           {
                           iface => $br,
                           type => 'bridge',
@@ -257,7 +256,7 @@ sub do_test {
   };
   if($count > 0) {
     print "Reboot required. Rebooting.\n";
-    my $reboot_res = $proxmox_tester->post('/nodes/'.$T{INTERNAL_NODE}.'/status',{ command => 'reboot'} );
+    my $reboot_res = $proxmox_tester->post($apinode.'/status',{ command => 'reboot'} );
     sleep(10);
     print "Checking...\n";
     do_check();
@@ -277,7 +276,7 @@ sub do_test {
           'content' => 'backup'
          });
 
-  my $storage_content=$proxmox_tester->get('/nodes/'.$T{INTERNAL_NODE}.'/storage/backup/content');
+  my $storage_content=$proxmox_tester->get($apinode.'/storage/backup/content');
   
 #  print Dumper($storage_content);
 
@@ -296,19 +295,8 @@ sub do_test {
 
 
 
-  my $apinode = '/nodes/'.$T{INTERNAL_NODE};
 
   my $oldqemu = $proxmox_tester->get($apinode.'/qemu');
-
-  foreach my $vm (@{$oldqemu}) {
-    print "Already have vm: ".$vm->{vmid}."\n";
-    if(defined($configs->{$vm->{vmid}})) {
-      print "Removing old vm : ".$vm->{vmid}."\n";
-      my $del_result = $proxmox_tester->delete($apinode.'/qemu/'.$vm->{vmid});
-      print "result: ".Dumper($del_result);
-      sleep(1);
-    };
-  };
 
   for my $vmid (keys(%{$configs})) {
      if(not(defined($backups->{$vmid}))) {
@@ -316,18 +304,23 @@ sub do_test {
      } else {
        foreach my $file (keys(%{$backups->{$vmid}})) {
 
-          print "Creating new vm $vmid:\n";
-          $configs->{$vmid}->{vmid}=$vmid;
-          #$configs->{$vmid}->{archive}=urlize($file);
-          my $create_result = $proxmox_tester->post($apinode.'/qemu',$configs->{$vmid});
-          #my $create_result = $proxmox_tester->post('/nodes/'.$T{INTERNAL_NODE}.'/qemu',{ vmid => $vmid, archive => urlize($file), storage => 'vmpool' });
-          print "create_result: ".Dumper($create_result)."\n";
-          print "restore job: \n";
-          my $cleanfile = $file;
-          $cleanfile =~s/.*\///;
+          system("ssh $T{USER}\@$T{HOST} qmrestore --storage ".$T{STORAGE}." --force 1 ".$file." ".$vmid );
 
-          system("ssh $T{USER}\@$T{HOST} qmrestore --storage backup ".$cleanfile );
- 
+          print "Changing required vm settings for $vmid:\n";
+          $configs->{$vmid}->{vmid}=$vmid;
+
+          my %newconfig = (
+               kvm => 0,
+               memory => $configs->{$vmid}->{memory}
+          ); 
+          if(defined($configs->{$vmid}->{_cdrom})) {
+            $newconfig{$configs->{$vmid}->{_cdrom}} = urlize( "none,media=cdrom" ); 
+          };
+          my $change_result = $proxmox_tester->put($apinode.'/qemu/'.$vmid.'/config', \%newconfig );
+
+          print "change_result: ".Dumper($change_result)."\n";
+          print "restore job: \n";
+
           print "You may go to https://".$T{HOST}.":8006/#v1:0:=qemu%2F$vmid , open the console and check for running jobs, run vm and test remaining thing manually\n";
           
           print "--Press any key to continue--\n";
@@ -456,6 +449,7 @@ __END__
    PASS: "ONEMOREPASS"
    INTERNAL_NODE: test-deb9-vm
    MAXMEMORY: 3000
+   STORAGE: vmpool
 
 =head1 DESCRIPTION
 
@@ -495,6 +489,8 @@ __END__
     INTERNAL_NODE - is it's hostname as it is seen from inside virtual proxmox
 
     MAXMEMORY - maximum amount of memory allowed for guest vms to allocate.
+ 
+    STORAGE - name of storage (inside virtual proxmox) to use for restoring vms
 
     N.B. We also expect that we can use ssh USER@HOST to log in to tester node and execute qmrestore, for example.
 
