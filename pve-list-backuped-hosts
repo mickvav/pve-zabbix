@@ -1,0 +1,102 @@
+#!/usr/bin/perl
+#use strict;
+use Getopt::Long;
+use Pod::Usage;
+use Data::Dumper;
+use Net::Proxmox::VE;
+
+no warnings 'experimental';
+my $proxmox_host='10.0.1.1';
+my $proxmox_user='admin';
+my $proxmox_realm='pam';
+my $proxmox_pass='admin';
+my $pve_group_name = 'Proxmox nodes';
+my $help = 0;
+my $man = 0;
+
+GetOptions ( 
+   "help|?" => \$help, 
+   "man" => \$man,
+   "proxmox_host=s" => \$proxmox_host,
+   "proxmox_user=s" => \$proxmox_user,
+   "proxmox_realm=s" => \$proxmox_realm,
+   "proxmox_pass=s" => \$proxmox_pass ) or die ("Error in command line args.");
+
+pod2usage(1) if $help;
+pod2usage(-verbose => 2) if $man;
+
+$ENV{PERL_LWP_SSL_VERIFY_HOSTNAME}=0;
+
+my $proxmox = Net::Proxmox::VE->new ( { 
+      host => $proxmox_host, 
+      username => $proxmox_user, 
+      password => $proxmox_pass, 
+      realm => $proxmox_realm,
+      ssl_opts => { verify_hostnames => 0 ,SSL_verify_mode => 0x00 }
+  } );
+
+$proxmox->login() or die ('Couldnt log in to proxmox host');
+
+my $nodes = $proxmox->get('/nodes');
+
+my $has_unbacked_disks;
+my $has_backed_disks;
+my $has_disks;
+
+for $node (sort @{$nodes}) {
+  $qemu_vms = $proxmox->get('/nodes/'.$node->{node}.'/qemu');
+  for $vm (sort { $a->{vmid} <=> $b->{$vmid} }  @{$qemu_vms} ) {
+     $config = $proxmox->get('/nodes/'.$node->{node}.'/qemu/'.$vm->{vmid}.'/config');
+     $state = $proxmox->get('/nodes/'.$node->{node}.'/qemu/'.$vm->{vmid}.'/status/current');
+     foreach $item (keys(%{$config})) {
+        if($item=~/^(ide|sata|virio|scsi)(\d+)/) {
+           $value=$config->{$item};
+
+           if($value !~ /media=cdrom/) {
+               $has_disks->{$vm->{vmid}} += 1;
+    
+               if($value =~ /backup=0/) {
+                  $has_unbacked_disks->{$vm->{vmid}} += 1; # '('.$item.'='.$value.')';
+               } else {
+                  $has_backed_disks->{$vm->{vmid}} += 1; # '('.$item.'='.$value.')';
+               };
+           };
+        };
+     };
+     if(defined($has_backed_disks->{$vm->{vmid}}) ) {
+         print $node->{node}."\t".$vm->{vmid}."\t".$state->{status}."\t".$state->{uptime}."\t".$state->{name}."\n";
+     };        
+#     print $node->{node}."\t".(sprintf "%20s",$vm->{name}).'('.$vm->{vmid}.")\t".$has_disks->{$vm->{vmid}}."\t".$has_backed_disks->{$vm->{vmid}}."\t".$has_unbacked_disks->{$vm->{vmid}}."\n";
+#     print Dumper($config);
+  };
+};
+__END__
+
+=head1 pve-list-backuped-hosts
+
+    pve-list-backuped-hosts - Discover pve nodes and get list of backuped hosts
+
+=head1  SYNOPSIS
+     
+    pve-list-backuped-hosts --proxmox_host=PROXMOX_SERVER --proxmox_user=USER --proxmox_pass=PASS
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<-help>
+
+    Print a brief help message and exits.
+
+=item B<-man>
+
+    Prints the manual page and exits.
+
+=back
+
+=head1 DESCRIPTION
+
+    B<This program> will connect to proxmox API and do the following:
+    1. get list of qemu vm's with disk drives having backup=1 option
+
+=cut 
