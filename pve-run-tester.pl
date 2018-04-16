@@ -323,13 +323,14 @@ sub do_test {
 
           print "You may go to https://".$T{HOST}.":8006/#v1:0:=qemu%2F$vmid , open the console and check for running jobs, run vm and test remaining thing manually\n";
           
-          print "--Press any key to continue--\n";
-          my $line = <STDIN>;
-
+          ### Here we can time-out, so login again.
+          $proxmox_tester->login();
           my $run_result = $proxmox_tester->post($apinode.'/qemu/'.$vmid.'/status/start');
           print "run_result: ".Dumper($run_result)."\n";
           print "--Press any key to continue--\n";
           my $line = <STDIN>;
+          ### Here we can time-out, so login again.
+          $proxmox_tester->login();
           print "Stoping vm:\n";
           my $stop_result = $proxmox_tester->post($apinode.'/qemu/'.$vmid.'/status/stop');
           print "stop_result: ".Dumper($stop_result)."\n";
